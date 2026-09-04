@@ -1,0 +1,621 @@
+package config
+
+import (
+	"fmt"
+	"net/url"
+	"slices"
+	"time"
+)
+
+// Config holds the overall configuration for the application.
+type Config struct {
+	Core            Core
+	Server          Server
+	Paths           PathsConfig
+	UI              UI
+	Queues          Queues
+	Coordinator     Coordinator
+	Worker          Worker
+	Scheduler       Scheduler
+	Monitoring      MonitoringConfig
+	DefaultExecMode ExecutionMode
+	Cache           CacheMode
+	GitSync         GitSyncConfig
+	Tunnel          TunnelConfig
+	License         LicenseConfig
+	Warnings        []string
+}
+
+// GitSyncConfig holds the configuration for Git sync functionality.
+type GitSyncConfig struct {
+	Enabled     bool
+	Repository  string // Format: github.com/org/repo or https://github.com/org/repo.git
+	Branch      string
+	Path        string // Subdirectory to sync (empty = root)
+	Auth        GitSyncAuthConfig
+	AutoSync    GitSyncAutoSyncConfig
+	PushEnabled bool
+	Commit      GitSyncCommitConfig
+}
+
+// GitSyncAuthConfig holds authentication configuration for Git operations.
+type GitSyncAuthConfig struct {
+	Type          string // "token" or "ssh"
+	Token         string // Personal access token for HTTPS
+	SSHKeyPath    string
+	SSHPassphrase string
+}
+
+// GitSyncAutoSyncConfig holds configuration for automatic synchronization.
+type GitSyncAutoSyncConfig struct {
+	Enabled   bool
+	OnStartup bool
+	Interval  int // Seconds; 0 disables periodic sync
+}
+
+// GitSyncCommitConfig holds configuration for Git commits.
+type GitSyncCommitConfig struct {
+	AuthorName  string // Default: "Dagu"
+	AuthorEmail string // Default: "dagu@localhost"
+}
+
+// TunnelConfig holds the configuration for tunnel services.
+type TunnelConfig struct {
+	Enabled       bool
+	Tailscale     TailscaleTunnelConfig
+	AllowTerminal bool     // Default: false for security
+	AllowedIPs    []string // IP allowlist (empty = allow all)
+	RateLimiting  TunnelRateLimitConfig
+}
+
+// TailscaleTunnelConfig holds Tailscale settings.
+type TailscaleTunnelConfig struct {
+	AuthKey  string // Empty requires interactive login
+	Hostname string // Machine name in tailnet (default: "dagu")
+	Funnel   bool   // Enable public internet access
+	HTTPS    bool   // Enable HTTPS for tailnet-only access
+	StateDir string // Default: $DAGU_HOME/tailscale
+}
+
+// TunnelRateLimitConfig holds rate limiting configuration for auth endpoints.
+type TunnelRateLimitConfig struct {
+	Enabled              bool
+	LoginAttempts        int
+	WindowSeconds        int
+	BlockDurationSeconds int
+}
+
+const TunnelProviderTailscale = "tailscale"
+
+// LicenseConfig holds the configuration for license activation.
+type LicenseConfig struct {
+	Key      string
+	CloudURL string
+}
+
+// ExecutionMode represents the default execution mode for DAGs.
+type ExecutionMode string
+
+const (
+	ExecutionModeLocal       ExecutionMode = "local"
+	ExecutionModeDistributed ExecutionMode = "distributed"
+)
+
+// MonitoringConfig holds the configuration for system monitoring.
+// Memory usage: ~4 metrics * (retention / interval) * 16 bytes per point.
+type MonitoringConfig struct {
+	Retention time.Duration
+	Interval  time.Duration
+}
+
+// Core contains global configuration settings.
+type Core struct {
+	Debug         bool
+	LogFormat     string // "json" or "text"
+	TZ            string // e.g., "UTC", "America/New_York"
+	TzOffsetInSec int
+	Location      *time.Location
+	DefaultShell  string // Platform default if empty
+	SkipExamples  bool   // Skip auto-creation of example DAGs
+	Peer          Peer
+	BaseEnv       BaseEnv
+}
+
+// Server contains the API server configuration.
+type Server struct {
+	Host              string
+	Port              int
+	BasePath          string // URL path for reverse proxy subpath hosting
+	APIBasePath       string
+	Headless          bool
+	AccessLog         AccessLogMode // "all" (default), "non-public", or "none"
+	LatestStatusToday bool
+	TLS               *TLSConfig
+	Auth              Auth
+	RemoteNodes       []RemoteNode
+	Permissions       map[Permission]bool
+	StrictValidation  bool
+	Metrics           MetricsAccess // "private" or "public"
+	Terminal          TerminalConfig
+	Audit             AuditConfig
+	Session           SessionConfig
+}
+
+// TerminalConfig contains configuration for the web-based terminal feature.
+type TerminalConfig struct {
+	Enabled bool // Default: false
+}
+
+// AuditConfig contains configuration for the audit logging feature.
+type AuditConfig struct {
+	Enabled       bool // Default: true
+	RetentionDays int  // Default: 7; 0 = keep forever
+}
+
+// SessionConfig contains configuration for agent session cleanup.
+type SessionConfig struct {
+	MaxPerUser int // Default: 100; 0 = unlimited
+}
+
+// Permission represents a permission string used in the application.
+type Permission string
+
+const (
+	PermissionWriteDAGs Permission = "write_dags"
+	PermissionRunDAGs   Permission = "run_dags"
+)
+
+// AuthMode represents the authentication mode.
+type AuthMode string
+
+const (
+	AuthModeNone    AuthMode = "none"
+	AuthModeBasic   AuthMode = "basic"
+	AuthModeBuiltin AuthMode = "builtin"
+)
+
+// AccessLogMode represents the HTTP access log mode.
+type AccessLogMode string
+
+const (
+	AccessLogAll       AccessLogMode = "all"
+	AccessLogNonPublic AccessLogMode = "non-public"
+	AccessLogNone      AccessLogMode = "none"
+)
+
+// MetricsAccess represents the access mode for the metrics endpoint.
+type MetricsAccess string
+
+const (
+	MetricsAccessPrivate MetricsAccess = "private"
+	MetricsAccessPublic  MetricsAccess = "public"
+)
+
+// Auth represents the authentication configuration.
+type Auth struct {
+	Mode    AuthMode
+	Basic   AuthBasic
+	OIDC    AuthOIDC
+	Builtin AuthBuiltin
+}
+
+// AuthBasic represents basic authentication credentials.
+type AuthBasic struct {
+	Username string
+	Password string
+}
+
+// AuthBuiltin represents builtin authentication with RBAC.
+type AuthBuiltin struct {
+	Token TokenConfig
+}
+
+// TokenConfig represents JWT token configuration.
+type TokenConfig struct {
+	Secret string
+	TTL    time.Duration
+}
+
+// AuthOIDC represents OIDC authentication configuration.
+// OIDC is available as an integration under builtin auth mode (auth.mode=builtin).
+type AuthOIDC struct {
+	ClientID     string
+	ClientSecret string
+	ClientURL    string   // Application URL for callback
+	Issuer       string   // OIDC provider URL
+	Scopes       []string // Default: openid, profile, email
+	Whitelist    []string // Email addresses always allowed
+
+	// Builtin-specific fields
+	AutoSignup     bool     // Default: true
+	AllowedDomains []string // Email domain whitelist
+	ButtonLabel    string   // Default: "Login with SSO"
+	RoleMapping    OIDCRoleMapping
+}
+
+// IsConfigured returns true if all required OIDC fields are set.
+func (o AuthOIDC) IsConfigured() bool {
+	return o.ClientID != "" && o.ClientSecret != "" && o.ClientURL != "" && o.Issuer != ""
+}
+
+// OIDCRoleMapping defines how OIDC claims are mapped to Dagu roles.
+type OIDCRoleMapping struct {
+	DefaultRole         string            // Default: "viewer"
+	GroupsClaim         string            // Default: "groups"
+	GroupMappings       map[string]string // IdP group -> Dagu role
+	RoleAttributePath   string            // jq expression for role extraction
+	RoleAttributeStrict bool              // Deny login if no valid role found
+	SkipOrgRoleSync     bool              // Only assign roles on first login
+}
+
+// PathsConfig represents the file system paths configuration.
+type PathsConfig struct {
+	DAGsDir            string
+	Executable         string
+	LogDir             string
+	DataDir            string
+	SuspendFlagsDir    string
+	AdminLogsDir       string
+	BaseConfig         string
+	AltDAGsDir         string
+	DAGRunsDir         string
+	QueueDir           string
+	ProcDir            string
+	ServiceRegistryDir string
+	UsersDir           string
+	APIKeysDir         string
+	WebhooksDir        string
+	SessionsDir        string
+	RemoteNodesDir     string
+	ConfigFileUsed     string
+}
+
+// UI holds user interface configuration.
+type UI struct {
+	LogEncodingCharset    string
+	NavbarColor           string
+	NavbarTitle           string
+	MaxDashboardPageLimit int
+	DAGs                  DAGsConfig
+}
+
+// DAGsConfig holds DAG list page configuration.
+type DAGsConfig struct {
+	SortField string
+	SortOrder string
+}
+
+// RemoteNode represents a remote node configuration.
+type RemoteNode struct {
+	Name              string
+	Description       string
+	APIBaseURL        string
+	AuthType          string
+	BasicAuthUsername string
+	BasicAuthPassword string
+	AuthToken         string
+	SkipTLSVerify     bool
+	Timeout           int // seconds; 0 = use default
+}
+
+// TLSConfig represents TLS configuration.
+type TLSConfig struct {
+	CertFile string
+	KeyFile  string
+	CAFile   string
+}
+
+// Queues represents global queue configuration.
+type Queues struct {
+	Enabled bool
+	Config  []QueueConfig
+}
+
+// QueueConfig represents individual queue configuration.
+type QueueConfig struct {
+	Name          string
+	MaxActiveRuns int
+}
+
+// FindQueueConfig returns the queue config if the queue name is defined in config.
+// Returns nil if not found or queues are disabled.
+func (c *Config) FindQueueConfig(queueName string) *QueueConfig {
+	if !c.Queues.Enabled || c.Queues.Config == nil {
+		return nil
+	}
+	for i := range c.Queues.Config {
+		if c.Queues.Config[i].Name == queueName {
+			return &c.Queues.Config[i]
+		}
+	}
+	return nil
+}
+
+// Coordinator represents the coordinator service configuration.
+type Coordinator struct {
+	Enabled   bool   // Default: true
+	ID        string // Default: hostname@port
+	Host      string // gRPC bind address
+	Advertise string // Registry address (auto-detected if empty)
+	Port      int
+}
+
+// Worker represents the worker configuration.
+type Worker struct {
+	ID            string            // Default: hostname@PID
+	MaxActiveRuns int               // Default: 100
+	Labels        map[string]string // Capability matching labels
+	Coordinators  []string          // Static discovery addresses (host:port)
+	PostgresPool  PostgresPoolConfig
+}
+
+// Scheduler represents the scheduler configuration.
+type Scheduler struct {
+	Port                    int           // Health check port (default: 8090)
+	LockStaleThreshold      time.Duration // Default: 30s
+	LockRetryInterval       time.Duration // Default: 5s
+	ZombieDetectionInterval time.Duration // Default: 45s; 0 disables
+}
+
+// PostgresPoolConfig holds PostgreSQL connection pool settings for workers.
+type PostgresPoolConfig struct {
+	MaxOpenConns    int // Default: 25
+	MaxIdleConns    int // Default: 5
+	ConnMaxLifetime int // Seconds (default: 300)
+	ConnMaxIdleTime int // Seconds (default: 60)
+}
+
+// Peer holds the TLS configuration for peer connections over gRPC.
+type Peer struct {
+	CertFile      string
+	KeyFile       string
+	ClientCaFile  string
+	SkipTLSVerify bool
+	Insecure      bool          // Use h2c instead of TLS
+	MaxRetries    int           // Default: 10 (exponential backoff, capped at 30s)
+	RetryInterval time.Duration // Default: 1s
+}
+
+// Validate performs basic validation on the configuration to ensure required fields are set
+// and that numerical values fall within acceptable ranges.
+func (c *Config) Validate() error {
+	if err := c.validateServer(); err != nil {
+		return err
+	}
+	if err := c.validateUI(); err != nil {
+		return err
+	}
+	if err := c.validateBasicAuth(); err != nil {
+		return err
+	}
+	if err := c.validateBuiltinAuth(); err != nil {
+		return err
+	}
+	if err := c.validateExecutionMode(); err != nil {
+		return err
+	}
+	if err := c.validateGitSync(); err != nil {
+		return err
+	}
+	if err := c.validateTunnel(); err != nil {
+		return err
+	}
+	if err := c.validateRemoteNodes(); err != nil {
+		return err
+	}
+	if err := c.validateLicense(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateServer validates server-related configuration.
+func (c *Config) validateServer() error {
+	if c.Server.Port < 0 || c.Server.Port > 65535 {
+		return fmt.Errorf("invalid port number: %d", c.Server.Port)
+	}
+
+	if c.Server.TLS != nil {
+		if c.Server.TLS.CertFile == "" || c.Server.TLS.KeyFile == "" {
+			return fmt.Errorf("TLS configuration incomplete: both cert and key files are required")
+		}
+	}
+
+	switch c.Server.Auth.Mode {
+	case AuthModeNone, AuthModeBasic, AuthModeBuiltin:
+		// Valid modes
+	default:
+		return fmt.Errorf("invalid auth mode: %q (must be one of: none, basic, builtin)", c.Server.Auth.Mode)
+	}
+
+	if c.Server.Session.MaxPerUser < 0 {
+		return fmt.Errorf("session.max_per_user must be >= 0")
+	}
+
+	return nil
+}
+
+// validateUI validates UI-related configuration.
+func (c *Config) validateUI() error {
+	if c.UI.MaxDashboardPageLimit < 1 || c.UI.MaxDashboardPageLimit > 1000 {
+		return fmt.Errorf("invalid max dashboard page limit: %d (must be 1-1000)", c.UI.MaxDashboardPageLimit)
+	}
+	return nil
+}
+
+// validateBasicAuth validates the basic authentication configuration.
+func (c *Config) validateBasicAuth() error {
+	if c.Server.Auth.Mode == AuthModeBasic {
+		if c.Server.Auth.Basic.Username == "" || c.Server.Auth.Basic.Password == "" {
+			return fmt.Errorf("basic auth requires both username and password to be set")
+		}
+		return nil
+	}
+
+	// Error if basic credentials are set under a non-basic mode.
+	if c.Server.Auth.Basic.Username != "" || c.Server.Auth.Basic.Password != "" {
+		return fmt.Errorf("auth.basic credentials are set but auth.mode is %q; set auth.mode to 'basic' or remove the auth.basic section", c.Server.Auth.Mode)
+	}
+	return nil
+}
+
+// validateBuiltinAuth validates the builtin authentication configuration.
+func (c *Config) validateBuiltinAuth() error {
+	if c.Server.Auth.Mode != AuthModeBuiltin {
+		return nil
+	}
+
+	if c.Paths.UsersDir == "" {
+		return fmt.Errorf("builtin auth requires paths.users_dir to be set")
+	}
+	if c.Server.Auth.Builtin.Token.TTL <= 0 {
+		return fmt.Errorf("builtin auth requires a positive token TTL")
+	}
+	if c.Server.Auth.OIDC.IsConfigured() {
+		return c.validateOIDCForBuiltin()
+	}
+	return nil
+}
+
+// validateOIDCForBuiltin validates OIDC configuration under builtin auth mode.
+func (c *Config) validateOIDCForBuiltin() error {
+	oidc := c.Server.Auth.OIDC
+
+	switch oidc.RoleMapping.DefaultRole {
+	case "admin", "manager", "developer", "operator", "viewer":
+		// Valid roles
+	default:
+		return fmt.Errorf("OIDC roleMapping.defaultRole must be one of: admin, manager, developer, operator, viewer (got: %q)", oidc.RoleMapping.DefaultRole)
+	}
+
+	if !slices.Contains(oidc.Scopes, "email") {
+		if len(oidc.Whitelist) > 0 || len(oidc.AllowedDomains) > 0 {
+			return fmt.Errorf("OIDC scopes must include 'email' when whitelist or allowedDomains is configured")
+		}
+		c.Warnings = append(c.Warnings, "OIDC scopes do not include 'email'; access control features will not work if added later")
+	}
+
+	return nil
+}
+
+// validateExecutionMode validates the default execution mode.
+func (c *Config) validateExecutionMode() error {
+	switch c.DefaultExecMode {
+	case ExecutionModeLocal, ExecutionModeDistributed:
+		return nil
+	default:
+		return fmt.Errorf("invalid default_execution_mode: %q (must be one of: local, distributed)", c.DefaultExecMode)
+	}
+}
+
+// validateGitSync validates the Git sync configuration.
+func (c *Config) validateGitSync() error {
+	if !c.GitSync.Enabled {
+		return nil
+	}
+	if c.GitSync.Repository == "" {
+		return fmt.Errorf("git sync requires repository to be set (git_sync.repository)")
+	}
+	if c.GitSync.Branch == "" {
+		return fmt.Errorf("git sync requires branch to be set (git_sync.branch)")
+	}
+
+	switch c.GitSync.Auth.Type {
+	case "", "token", "ssh":
+		// Valid (empty defaults to token)
+	default:
+		return fmt.Errorf("git sync auth type must be 'token' or 'ssh' (got: %q)", c.GitSync.Auth.Type)
+	}
+
+	if c.GitSync.Auth.Type == "ssh" && c.GitSync.Auth.SSHKeyPath == "" {
+		return fmt.Errorf("git sync SSH auth requires ssh_key_path to be set")
+	}
+	if c.GitSync.AutoSync.Interval < 0 {
+		return fmt.Errorf("git sync auto_sync.interval must be non-negative (got: %d)", c.GitSync.AutoSync.Interval)
+	}
+	return nil
+}
+
+// validateTunnel validates the tunnel configuration.
+func (c *Config) validateTunnel() error {
+	if !c.Tunnel.Enabled {
+		return nil
+	}
+	// Public tunnels (Tailscale Funnel) require authentication
+	if c.Tunnel.Tailscale.Funnel && c.Server.Auth.Mode == AuthModeNone {
+		return fmt.Errorf("tunnel with public access requires authentication; set server.auth.mode=builtin or disable tailscale funnel for private access")
+	}
+	return c.validateTunnelRateLimiting()
+}
+
+// validateTunnelRateLimiting validates rate limiting configuration for tunnels.
+func (c *Config) validateTunnelRateLimiting() error {
+	rl := c.Tunnel.RateLimiting
+	if !rl.Enabled {
+		return nil
+	}
+	if rl.LoginAttempts <= 0 {
+		return fmt.Errorf("tunnel rate limiting login_attempts must be positive")
+	}
+	if rl.WindowSeconds <= 0 {
+		return fmt.Errorf("tunnel rate limiting window_seconds must be positive")
+	}
+	if rl.BlockDurationSeconds <= 0 {
+		return fmt.Errorf("tunnel rate limiting block_duration_seconds must be positive")
+	}
+	return nil
+}
+
+// IsTunnelPublic returns true if the tunnel exposes the service to the public internet.
+func (c *Config) IsTunnelPublic() bool {
+	return c.Tunnel.Enabled && c.Tunnel.Tailscale.Funnel
+}
+
+// validateRemoteNodes validates the remote node configuration.
+func (c *Config) validateRemoteNodes() error {
+	for i, n := range c.Server.RemoteNodes {
+		if n.Name == "" {
+			continue
+		}
+		if n.APIBaseURL == "" {
+			return fmt.Errorf("remote_nodes[%d] (%q): api_base_url is required", i, n.Name)
+		}
+		switch n.AuthType {
+		case "", "none", "basic", "token":
+			// valid
+		default:
+			return fmt.Errorf("remote_nodes[%d] (%q): invalid auth_type %q (must be one of: none, basic, token)", i, n.Name, n.AuthType)
+		}
+		if n.AuthType == "basic" {
+			if n.BasicAuthUsername == "" || n.BasicAuthPassword == "" {
+				return fmt.Errorf("remote_nodes[%d] (%q): basic auth requires both basic_auth_username and basic_auth_password", i, n.Name)
+			}
+		}
+		if n.AuthType == "token" {
+			if n.AuthToken == "" {
+				return fmt.Errorf("remote_nodes[%d] (%q): token auth requires auth_token", i, n.Name)
+			}
+		}
+		if n.Timeout < 0 {
+			return fmt.Errorf("remote_nodes[%d] (%q): timeout must not be negative", i, n.Name)
+		}
+	}
+	return nil
+}
+
+// validateLicense validates the license configuration.
+func (c *Config) validateLicense() error {
+	if c.License.CloudURL != "" {
+		u, err := url.Parse(c.License.CloudURL)
+		if err != nil {
+			return fmt.Errorf("invalid license cloud URL: %w", err)
+		}
+		if u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("license cloud URL must include scheme and host (e.g., https://cloud.example.com)")
+		}
+		if u.Scheme != "https" {
+			return fmt.Errorf("license cloud URL must use HTTPS")
+		}
+	}
+	return nil
+}
