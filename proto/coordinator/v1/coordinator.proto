@@ -1,0 +1,240 @@
+syntax = "proto3";
+
+package coordinator.v1;
+
+// protolint:disable:next MAX_LINE_LENGTH
+option go_package = "github.com/dagu-org/dagu/proto/coordinator/v1;coordinatorv1";
+
+
+// Service definition for Coordinator Service.
+service CoordinatorService {
+  // Poll is called by workers to process a task.
+  rpc Poll (PollRequest) returns (PollResponse);
+  // Dispatch is called to dispatch a task to a worker.
+  rpc Dispatch (DispatchRequest) returns (DispatchResponse);
+  // GetWorkers returns the list of connected workers and their pollers.
+  rpc GetWorkers (GetWorkersRequest) returns (GetWorkersResponse);
+  // Heartbeat is called by workers to report their status.
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+
+  // ReportStatus is called by workers to push DAG run status updates.
+  // Used in shared-nothing architecture where workers don't have filesystem access.
+  rpc ReportStatus (ReportStatusRequest) returns (ReportStatusResponse);
+
+  // StreamLogs is called by workers to stream step logs to the coordinator.
+  // Uses client streaming for efficient log transmission.
+  rpc StreamLogs (stream LogChunk) returns (StreamLogsResponse);
+
+  // GetDAGRunStatus retrieves the status of a DAG run from the coordinator.
+  // Used by parent DAGs to poll status of remote sub-DAGs in shared-nothing mode.
+  rpc GetDAGRunStatus (GetDAGRunStatusRequest) returns (GetDAGRunStatusResponse);
+
+  // RequestCancel is called to request cancellation of a DAG run.
+  // Used in shared-nothing mode for sub-DAG cancellation where the parent
+  // cannot directly access the sub-DAG's attempt.
+  rpc RequestCancel (RequestCancelRequest) returns (RequestCancelResponse);
+}
+
+// Request message for polling a task.
+message PollRequest {
+  string worker_id = 1;
+  string poller_id = 2; // Unique ID for this poll request
+  map<string, string> labels = 3; // Worker labels for task matching
+}
+
+// Response message for polling a task.
+message PollResponse {
+  Task task = 1; // The task to process.
+}
+
+// Request message for dispatching a task.
+message DispatchRequest {
+  Task task = 1;
+}
+
+// Response message for dispatching a task.
+message DispatchResponse {
+  // No field
+}
+
+// Task to process.
+message Task {
+  Operation operation = 6;
+  string root_dag_run_name = 1;
+  string root_dag_run_id = 2;
+  string parent_dag_run_name = 3;
+  string parent_dag_run_id = 4;
+  string dag_run_id = 5;
+  string target = 7; // DAG name or path
+  string params = 8; // Optional: parameters
+  string step = 9;   // Optional: specific step (for RETRY)
+  map<string, string> worker_selector = 10; // Required worker labels for execution
+  string definition = 11; // Optional: DAG definition (YAML) for local DAGs
+  string worker_id = 12; // ID of the worker that will execute this task
+  // Previous status for OPERATION_RETRY in shared-nothing mode.
+  // When set, workers can retry without needing local DAGRunStore access.
+  DAGRunStatusProto previous_status = 13;
+  // Attempt ID created by coordinator. Workers use this to create attempts with the same ID.
+  string attempt_id = 14;
+  // Globally unique attempt identifier for cancellation tracking.
+  string attempt_key = 15;
+}
+
+enum Operation {
+  OPERATION_UNSPECIFIED = 0;
+  OPERATION_START = 1;    // Start a new DAG run
+  OPERATION_RETRY = 2;    // Retry an existing run
+}
+
+// Health status of a worker based on heartbeat recency.
+enum WorkerHealthStatus {
+  WORKER_HEALTH_STATUS_UNSPECIFIED = 0;
+  WORKER_HEALTH_STATUS_HEALTHY = 1;      // Last heartbeat < 5 seconds
+  WORKER_HEALTH_STATUS_WARNING = 2;      // Last heartbeat 5-15 seconds
+  WORKER_HEALTH_STATUS_UNHEALTHY = 3;    // Last heartbeat > 15 seconds
+}
+
+// Request message for getting workers.
+message GetWorkersRequest {
+  // No fields needed for now
+}
+
+// Response message for getting workers.
+message GetWorkersResponse {
+  repeated WorkerInfo workers = 1;
+}
+
+// Information about a worker and its pollers.
+message WorkerInfo {
+  string worker_id = 1;
+  string poller_id = 2;  // Deprecated: Only used for backward compatibility
+  map<string, string> labels = 3;
+  int64 connected_at = 4; // Unix timestamp in seconds
+  // Aggregated stats from heartbeat
+  int32 total_pollers = 5;
+  int32 busy_pollers = 6;
+  repeated RunningTask running_tasks = 7;
+  int64 last_heartbeat_at = 8; // Unix timestamp of last heartbeat
+  WorkerHealthStatus health_status = 9; // Health status based on heartbeat recency
+}
+
+// Request message for heartbeat.
+message HeartbeatRequest {
+  string worker_id = 1;
+  map<string, string> labels = 2;
+  WorkerStats stats = 3;
+}
+
+// Response message for heartbeat.
+message HeartbeatResponse {
+  // List of DAG runs that should be cancelled by the worker.
+  // Workers check this on each heartbeat and cancel matching running tasks.
+  repeated CancelledRun cancelled_runs = 1;
+}
+
+// Information about a cancelled DAG run.
+message CancelledRun {
+  string attempt_key = 1; // Globally unique attempt identifier to cancel
+}
+
+// Worker statistics reported via heartbeat.
+message WorkerStats {
+  int32 total_pollers = 1;      // Total number of pollers
+  int32 busy_pollers = 2;       // Number currently processing tasks
+  repeated RunningTask running_tasks = 3; // Details of running tasks
+}
+
+// Information about a running task.
+message RunningTask {
+  string dag_run_id = 1;
+  string dag_name = 2;
+  int64 started_at = 3;         // Unix timestamp in seconds
+  string root_dag_run_name = 4;
+  string root_dag_run_id = 5;
+  string parent_dag_run_name = 6;
+  string parent_dag_run_id = 7;
+  string attempt_key = 8;       // Globally unique attempt identifier
+}
+
+// Request message for reporting DAG run status.
+message ReportStatusRequest {
+  string worker_id = 1;
+  DAGRunStatusProto status = 2;
+}
+
+// Response message for reporting DAG run status.
+message ReportStatusResponse {
+  bool accepted = 1;
+  string error = 2;
+}
+
+// Full DAG run status (JSON-serialized execution.DAGRunStatus).
+message DAGRunStatusProto {
+  string json_data = 1;
+}
+
+// Log chunk sent from worker to coordinator.
+message LogChunk {
+  string worker_id = 1;
+  string dag_run_id = 2;
+  string dag_name = 3;
+  string step_name = 4;
+  LogStreamType stream_type = 5;
+  bytes data = 6;
+  uint64 sequence = 7;  // For ordering
+  bool is_final = 8;    // Last chunk for this step
+
+  // Root DAG info for sub-DAGs
+  string root_dag_run_name = 9;
+  string root_dag_run_id = 10;
+
+  // Attempt ID for the DAG run
+  string attempt_id = 11;
+}
+
+// Type of log stream.
+enum LogStreamType {
+  LOG_STREAM_TYPE_UNSPECIFIED = 0;
+  LOG_STREAM_TYPE_STDOUT = 1;
+  LOG_STREAM_TYPE_STDERR = 2;
+  LOG_STREAM_TYPE_SCHEDULER = 3;  // Scheduler/DAG run log
+}
+
+// Response message for log streaming.
+message StreamLogsResponse {
+  uint64 chunks_received = 1;
+  uint64 bytes_written = 2;
+  string error = 3;
+}
+
+// Request message for getting DAG run status.
+message GetDAGRunStatusRequest {
+  string dag_name = 1;      // Name of the DAG
+  string dag_run_id = 2;    // ID of the DAG run
+  // Root DAG run info for sub-DAG queries (optional).
+  // When set, the coordinator looks up the status as a sub-DAG.
+  string root_dag_run_name = 3;
+  string root_dag_run_id = 4;
+}
+
+// Response message for getting DAG run status.
+message GetDAGRunStatusResponse {
+  bool found = 1;                   // Whether the DAG run was found
+  DAGRunStatusProto status = 2;     // The status (only set if found)
+  string error = 3;                 // Error message if any
+}
+
+// Request message for cancelling a DAG run.
+message RequestCancelRequest {
+  string dag_name = 1;
+  string dag_run_id = 2;
+  // Root DAG run info for sub-DAG cancellation
+  string root_dag_run_name = 3;
+  string root_dag_run_id = 4;
+}
+
+// Response message for cancelling a DAG run.
+message RequestCancelResponse {
+  bool accepted = 1;
+  string error = 2;
+}
