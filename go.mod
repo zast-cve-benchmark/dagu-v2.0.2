@@ -1,6 +1,6 @@
 module github.com/dagu-org/dagu
 
-go 1.26
+go 1.26.0
 
 require (
 	dario.cat/mergo v1.0.2
@@ -56,7 +56,7 @@ require (
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.5.1
 	gotest.tools/gotestsum v1.13.0
 	modernc.org/sqlite v1.43.0
-	mvdan.cc/sh/v3 v3.12.0
+	mvdan.cc/sh/v3 v3.14.1
 	tailscale.com v1.94.0
 )
 
@@ -372,7 +372,7 @@ require (
 	github.com/quasilyte/regex/syntax v0.0.0-20210819130434-b3f0c404a727 // indirect
 	github.com/quasilyte/stdinfo v0.0.0-20220114132959-f7386bf02567 // indirect
 	github.com/raeperd/recvcheck v0.2.0 // indirect
-	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	github.com/rogpeppe/go-internal v1.15.0 // indirect
 	github.com/ryancurrah/gomodguard v1.4.1 // indirect
 	github.com/ryanrolds/sqlclosecheck v0.5.1 // indirect
 	github.com/sagikazarmark/locafero v0.7.0 // indirect
@@ -427,7 +427,7 @@ require (
 	golang.org/x/mod v0.30.0 // indirect
 	golang.org/x/oauth2 v0.32.0
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/term v0.38.0
+	golang.org/x/term v0.45.0
 	golang.org/x/tools v0.39.0 // indirect
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6 // indirect
@@ -445,6 +445,6 @@ require (
 	github.com/samber/lo v1.52.0
 	golang.org/x/crypto v0.46.0
 	golang.org/x/net v0.48.0 // indirect
-	golang.org/x/sys v0.40.0
+	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
